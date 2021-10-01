@@ -168,6 +168,57 @@ namespace Akavache
         }
 
         /// <summary>
+        /// Attempt to call a function to return the latest version of an object and insert the result in the cache.
+        /// </summary>
+        /// <typeparam name="T">The type of item to get.</typeparam>
+        /// <param name="blobCache">The cache to get the item.</param>
+        /// <param name="key">The key to associate with the object.</param>
+        /// <param name="fetchFunc">A function which will asynchronously return the latest value for the object should connectivity be available.</param>
+        ///
+        /// Observable.Start is the most straightforward way (thought not the most efficient!) to implement this function.
+        /// <param name="absoluteExpiration">An optional expiration date.</param>
+        /// <returns>A Future result representing the deserialized object from
+        /// the cache.</returns>
+        public static IObservable<T?> FetchOrGetObject<T>(this IBlobCache blobCache, string key, Func<IObservable<T>> fetchFunc, DateTimeOffset? absoluteExpiration = null)
+        {
+            if (blobCache is null)
+            {
+                throw new ArgumentNullException(nameof(blobCache));
+            }
+
+            var prefixedKey = blobCache.GetHashCode().ToString(CultureInfo.InvariantCulture) + key;
+
+            var result = Observable.Defer(fetchFunc)
+                .Do(x => blobCache.InsertObject(key, x, absoluteExpiration))
+                .Finally(() => _inflightFetchRequests.TryRemove(prefixedKey, out var _))
+                .Multicast(new AsyncSubject<T>()).RefCount();
+
+            var addOrGet = (IObservable<T>)_inflightFetchRequests.GetOrAdd(prefixedKey, result);
+
+            return addOrGet.Catch<T?, Exception>(x => blobCache.GetObject<T?>(key));
+        }
+
+        /// <summary>
+        /// Attempt to call a function to return the latest version of an object and insert the result in the cache.
+        /// </summary>
+        /// <typeparam name="T">The type of item to get.</typeparam>
+        /// <param name="blobCache">The cache to get the item.</param>
+        /// <param name="key">The key to associate with the object.</param>
+        /// <param name="fetchFunc">A function which will asynchronously return the latest value for the object should connectivity be available.</param>
+        /// <param name="absoluteExpiration">An optional expiration date.</param>
+        /// <returns>A Future result representing the deserialized object from
+        /// the cache.</returns>
+        public static IObservable<T?> FetchOrGetObject<T>(this IBlobCache blobCache, string key, Func<Task<T>> fetchFunc, DateTimeOffset? absoluteExpiration = null)
+        {
+            if (blobCache is null)
+            {
+                throw new ArgumentNullException(nameof(blobCache));
+            }
+
+            return blobCache.FetchOrGetObject(key, () => fetchFunc().ToObservable(), absoluteExpiration);
+        }
+
+        /// <summary>
         /// Attempt to return an object from the cache. If the item doesn't
         /// exist or returns an error, call a Func to return the latest
         /// version of an object and insert the result in the cache.
